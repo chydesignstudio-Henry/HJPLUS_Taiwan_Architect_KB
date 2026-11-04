@@ -1,0 +1,59 @@
+name: 同步上游
+
+# 這個工作流程只屬於 fork。上游若不是 fork，腳本會直接失敗。
+# 請不要把這個檔案送回上游。
+#
+# 每天台北時間 03:00 左右，把上游預設分支合併進本 fork 的預設分支。
+# GitHub 排程以 UTC 計算：19:00 UTC = 03:00 Asia/Taipei（台灣沒有日光節約時間）。
+# 尖峰時段排程可能晚幾分鐘到幾十分鐘才開始。
+#
+# 實作只呼叫 REST API POST /repos/{owner}/{repo}/merge-upstream：
+#   - 能快轉就快轉（merge_type=fast-forward）
+#   - 本 fork 另有提交時建立 merge commit（merge_type=merge），那些提交與檔案會留著
+#   - 衝突時回 HTTP 409，分支不會被改寫；工作流程失敗，並盡量開立或更新一則議題
+# 不呼叫 git refs 更新，也不送出 force=true，因此不會 force push。
+# `gh repo sync --force` 在衝突時會改以 hard reset 覆蓋本 fork，這裡故意不用。
+#
+# 上游是誰，每次從 fork 的 parent 欄位讀取，不寫死在檔案裡。
+#
+# Token：
+#   預設使用 GITHUB_TOKEN（此檔授予 contents: write 與 issues: write）。
+#   若上游提交改到 .github/workflows，GitHub 會回 422，因為 GITHUB_TOKEN
+#   沒有 workflows 權限，而且下面的 permissions 區塊無法補上這項權限。
+#   這時可新增 Actions secret「UPSTREAM_SYNC_TOKEN」（fine-grained PAT，
+#   只限本儲存庫，Contents、Workflows、Issues 皆為讀寫）。秘密存在時會改用它；
+#   沒有就繼續用 GITHUB_TOKEN。不需要為此修改這個檔案。
+#
+# Fork 的排程工作流程在 GitHub 預設是停用的。合併後請到 Actions 分頁啟用「同步上游」。
+# 本 fork 目前若尚未開啟 Issues，衝突時仍會讓這次執行失敗，但無法自動開立議題。
+
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 合併上游
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取出同步腳本
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: 合併上游到預設分支
+        env:
+          GITHUB_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          SYNC_TOKEN_SOURCE: ${{ secrets.UPSTREAM_SYNC_TOKEN && 'UPSTREAM_SYNC_TOKEN' || 'GITHUB_TOKEN' }}
+        run: bash .github/scripts/sync-upstream.sh
